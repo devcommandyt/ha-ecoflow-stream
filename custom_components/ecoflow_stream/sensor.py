@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
-from homeassistant.const import UnitOfElectricPotential, UnitOfPower, UnitOfTemperature
+from datetime import timedelta
+from time import monotonic
+
+from homeassistant.const import UnitOfElectricPotential, UnitOfEnergy, UnitOfPower, UnitOfTemperature
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import signal
 from .const import CONF_SN, DOMAIN
@@ -20,7 +25,7 @@ SENSORS = [
 
 async def async_setup_entry(hass, entry, async_add_entities):
     store = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(EcoflowSensor(entry, store, *s) for s in SENSORS)
+    async_add_entities([*(EcoflowSensor(entry, store, *s) for s in SENSORS), EcoflowEnergySensor(entry, store)])
 
 
 class EcoflowSensor(SensorEntity):
@@ -52,3 +57,57 @@ class EcoflowSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(async_dispatcher_connect(
             self.hass, signal(self._entry.entry_id), self.async_write_ha_state))
+
+
+class EcoflowEnergySensor(SensorEntity, RestoreEntity):
+    """Solar energy in kWh (for the Energy dashboard), integrated from the feed-in power.
+
+    The device only reports power, so the last known power is held between updates.
+    A once-a-minute tick keeps counting while the power stays constant.
+    """
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_name = "Solar energy"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 3
+    _MAX_GAP = 300  # seconds; longer gaps (restart, outage) are not counted
+
+    def __init__(self, entry, store) -> None:
+        self._entry = entry
+        self._store = store
+        self._total = 0.0
+        self._last_t = None
+        self._last_w = None
+        sn = entry.data[CONF_SN]
+        self._attr_unique_id = f"{sn}_solar_energy"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, sn)})
+
+    @property
+    def native_value(self):
+        return round(self._total, 4)
+
+    def _accrue(self) -> None:
+        now = monotonic()
+        if self._last_t is not None and self._last_w is not None:
+            dt = min(now - self._last_t, self._MAX_GAP)
+            self._total += self._last_w * dt / 3600 / 1000
+        self._last_t = now
+        w = self._store["data"].get("gridConnectionPower")
+        if w is not None:
+            self._last_w = max(float(w), 0.0)
+
+    def _on_update(self, *_args) -> None:
+        self._accrue()
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        if (last := await self.async_get_last_state()) is not None:
+            try:
+                self._total = float(last.state)
+            except (TypeError, ValueError):
+                pass
+        self.async_on_remove(async_dispatcher_connect(self.hass, signal(self._entry.entry_id), self._on_update))
+        self.async_on_remove(async_track_time_interval(self.hass, self._on_update, timedelta(seconds=60)))
