@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EcoFlow STREAM",
+        "description": "Access Key unter developer.ecoflow.com erstellen. Die Seriennummer steht am Gerät und in der EcoFlow-App.",
+        "data": {"access_key": "Access Key", "secret_key": "Secret Key", "sn": "Seriennummer"}
+      }
+    },
+    "error": {"invalid_auth": "Access Key oder Secret Key abgelehnt", "cannot_connect": "EcoFlow nicht erreichbar"},
+    "abort": {"already_configured": "Dieses Gerät ist schon eingerichtet"}
+  }
+}
